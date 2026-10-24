@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import sqlite3
+import calendar
 import datetime as dt
 from typing import Dict, Any, Optional, List, Tuple
 from dataclasses import dataclass
@@ -128,6 +129,38 @@ class CoinCycleResult:
     futures_verdict: str
     trading_verdict: str
     verdict_reason: str
+
+
+@dataclass
+class WeeklyCycleResult:
+    asof_date: str
+    day_name: str
+    day_of_week: int  # 0=Monday, 6=Sunday
+    phase_code: str
+    phase_name: str
+    historical_down_win_rate: float
+    historical_avg_alt_return: float
+    excess_vs_btc: float
+    market_behavior: str
+    tactical_stance: str
+    sizing_multiplier: float
+    actionable_rules: List[str]
+
+
+@dataclass
+class MonthlyCycleResult:
+    asof_date: str
+    day_of_month: int
+    days_in_month: int
+    cycle_phase: str
+    phase_name: str
+    is_options_expiry_week: bool
+    is_last_friday: bool
+    historical_avg_return: float
+    institutional_flow: str
+    tactical_stance: str
+    sizing_multiplier: float
+    actionable_rules: List[str]
 
 def compute_bms(df_daily: pd.DataFrame, lookback: int = 180) -> Dict[str, Any]:
     c = df_daily['close'].iloc[-lookback:] if len(df_daily) >= lookback else df_daily['close']
@@ -423,6 +456,203 @@ def scan_and_update_all_cycles(candle_dir: Optional[str] = None, db_path: str = 
 
     save_coin_cycle_results(results, db_path)
     return macro_res, [r[0] for r in results]
+
+
+WEEKLY_PROFILES = {
+    0: {
+        'phase_code': 'MON_RANGE_FORMATION',
+        'phase_name': 'Monday Open & Initial Range Formation',
+        'down_win_rate': 49.2,
+        'alt_ret': 0.28,
+        'excess_btc': -0.34,
+        'behavior': 'Volume tertinggi mingguan (~1.02e8). Pembukaan institusi Asia/London. Pembentukan batas awal High-Low Senin.',
+        'stance': 'RANGE_BUILD_OBSERVE',
+        'sizing': 0.85,
+        'rules': [
+            'Tandai level High dan Low sesi Senin sebagai batas range mingguan.',
+            'Waspadai fakeout awal di sesi London/NY awal sebelum arah mingguan terbentuk.',
+            'Altcoin cenderung underperform BTC (-0.34% excess); hindari buy altcoin agresif.'
+        ]
+    },
+    1: {
+        'phase_code': 'TUE_BEARISH_EXPANSION',
+        'phase_name': 'Tuesday High-Probability Breakdown (Golden Window)',
+        'down_win_rate': 53.5,
+        'alt_ret': -0.29,
+        'excess_btc': -0.36,
+        'behavior': 'Hari paling bearish dalam seminggu (53.5% koin merah, median -0.45%). Sering membentuk High of the Week diikuti breakdown tajam.',
+        'stance': 'SHORT_OPTIMAL',
+        'sizing': 1.20,
+        'rules': [
+            'Prioritaskan eksekusi setup short breakdown yang terkonfirmasi filter D1/D2.',
+            'Gunakan sizing penuh / agresif (1.2x) untuk setup A+ quality.',
+            'Biarkan trailing TP berjalan longgar pada koin tren untuk memanen tren turun mingguan.'
+        ]
+    },
+    2: {
+        'phase_code': 'WED_MIDWEEK_REVERSAL',
+        'phase_name': 'Wednesday Midweek Rotation & Relief Bounce',
+        'down_win_rate': 48.9,
+        'alt_ret': 0.26,
+        'excess_btc': 0.12,
+        'behavior': 'Rotasi sektor dan relief bounce pasca dump Selasa. Altcoin cenderung outperform BTC sesaat (+0.12%).',
+        'stance': 'SELECTIVE_MOMENTUM',
+        'sizing': 1.00,
+        'rules': [
+            'Jangan short koin di dekat level support kuat koin Base.',
+            'Aktifkan Early Breakeven (+0.50R Lock) agresif untuk melindungi open profit.',
+            'Short hanya koin yang gagal memantul saat BTC hijau.'
+        ]
+    },
+    3: {
+        'phase_code': 'THU_PRE_EXPIRY_CONSOLIDATION',
+        'phase_name': 'Thursday Pre-Expiry Positioning',
+        'down_win_rate': 51.2,
+        'alt_ret': -0.08,
+        'excess_btc': -0.15,
+        'behavior': 'Positioning menjelang settlement Deribit options mingguan. Volatilitas rentang menyusut.',
+        'stance': 'NEUTRAL_HOLD',
+        'sizing': 0.90,
+        'rules': [
+            'Saring kandidat koin lemah yang menunjukkan penumpukan open interest short.',
+            'Hindari pembukaan posisi baru di luar sesi London/NY.'
+        ]
+    },
+    4: {
+        'phase_code': 'FRI_OPTIONS_EXPIRY_CME_SETTLE',
+        'phase_name': 'Friday Expiry Release & CME Close',
+        'down_win_rate': 50.7,
+        'alt_ret': -0.03,
+        'excess_btc': -0.16,
+        'behavior': 'Deribit Expiry 08:00 UTC (15:00 WIB) + CME close 21:00 UTC. Max pain pinning pagi, ekspansi sore/malam.',
+        'stance': 'POST_EXPIRY_BREAKOUT',
+        'sizing': 1.00,
+        'rules': [
+            'Tunggu hingga lewat pukul 15:00 WIB (08:00 UTC Deribit settlement) sebelum entry breakout.',
+            'Amankan profit sebelum sesi CME tutup di tengah malam WIB.'
+        ]
+    },
+    5: {
+        'phase_code': 'SAT_LIQUIDITY_VACUUM',
+        'phase_name': 'Saturday Liquidity Drop & Slow Bleed',
+        'down_win_rate': 52.2,
+        'alt_ret': -0.19,
+        'excess_btc': -0.12,
+        'behavior': 'Volume anjlok >50% (4.70e7). Range menyempit (5.0%). Orderbook tipis rentan manipulasi.',
+        'stance': 'WEEKEND_DEFENSIVE',
+        'sizing': 0.50,
+        'rules': [
+            'Pangkas sizing hingga 50% (0.5x).',
+            'Dilarang trading breakout naif; utamakan istirahat atau mode konservatif.',
+            'Waspadai slippage eksekusi karena tipisnya kedalaman orderbook.'
+        ]
+    },
+    6: {
+        'phase_code': 'SUN_WEEKEND_TRAP',
+        'phase_name': 'Sunday Pre-Monday Frontrunning / Trap',
+        'down_win_rate': 49.7,
+        'alt_ret': 0.24,
+        'excess_btc': 0.18,
+        'behavior': 'Sunday pump manipulatif menjelang open Asia Senin. Volume masih rendah.',
+        'stance': 'PRE_WEEK_MONITOR',
+        'sizing': 0.50,
+        'rules': [
+            'Jangan terprovokasi pump hari Minggu bervolume rendah.',
+            'Gunakan pump Minggu untuk memetakan level resistensi ideal untuk shorting Senin/Selasa.'
+        ]
+    }
+}
+
+def evaluate_weekly_cycle(asof: Optional[dt.date] = None) -> WeeklyCycleResult:
+    asof = asof or dt.date.today()
+    dow = asof.weekday()
+    days_names = ['Senin (Monday)', 'Selasa (Tuesday)', 'Rabu (Wednesday)', 'Kamis (Thursday)', 'Jumat (Friday)', 'Sabtu (Saturday)', 'Minggu (Sunday)']
+    day_name = days_names[dow]
+    p = WEEKLY_PROFILES[dow]
+    return WeeklyCycleResult(
+        asof_date=str(asof),
+        day_name=day_name,
+        day_of_week=dow,
+        phase_code=p['phase_code'],
+        phase_name=p['phase_name'],
+        historical_down_win_rate=p['down_win_rate'],
+        historical_avg_alt_return=p['alt_ret'],
+        excess_vs_btc=p['excess_btc'],
+        market_behavior=p['behavior'],
+        tactical_stance=p['stance'],
+        sizing_multiplier=p['sizing'],
+        actionable_rules=p['rules']
+    )
+
+def evaluate_monthly_cycle(asof: Optional[dt.date] = None) -> MonthlyCycleResult:
+    asof = asof or dt.date.today()
+    day = asof.day
+    _, days_in_month = calendar.monthrange(asof.year, asof.month)
+    
+    is_last_fri = (asof.weekday() == 4) and (day + 7 > days_in_month)
+    is_expiry_week = (day + 7 > days_in_month)
+    
+    if day <= 5:
+        phase_code = 'M1_INFLOW_EXPANSION'
+        phase_name = 'Fase Awal Bulan (Turn-of-Month Inflow & Squeeze Risk)'
+        avg_ret = 0.37
+        flow = 'Inflow likuiditas ritel (gaji) & institusional (DCA dana pensiun, alokasi baru ETF).'
+        stance = 'CAUTION_SHORT'
+        sizing = 0.75
+        rules = [
+            'Waspadai short squeeze pada koin-koin ber-funding negatif di awal bulan.',
+            'Keringkan agresivitas short; gunakan konfirmasi D1 taker flow ketat.',
+            'Momen paling ramah untuk DCA spot portofolio akumulasi.'
+        ]
+    elif day <= 15:
+        phase_code = 'M2_MID_MACRO_FLOW'
+        phase_name = 'Fase Pertengahan Awal (Macro Data & Directional Discovery)'
+        avg_ret = -0.09
+        flow = 'Inflow awal bulan terserap; pasar sensitif terhadap data makro (US CPI/PPI/FOMC).'
+        stance = 'TACTICAL_SELECTIVE'
+        sizing = 1.00
+        rules = [
+            'Fokus pada koin dengan katalis orderflow murni.',
+            'Waspadai lonjakan volatilitas di hari pengumuman CPI/FOMC AS.'
+        ]
+    elif day <= 24:
+        phase_code = 'M3_PRE_EXPIRY_POSITIONING'
+        phase_name = 'Fase Pertengahan Akhir (Pre-Monthly Expiry Positioning)'
+        avg_ret = -0.06
+        flow = 'Market maker derivatif mulai melakukan rehedging delta/gamma besar-besaran.'
+        stance = 'POSITION_EXPANSION'
+        sizing = 1.00
+        rules = [
+            'Petakan level Max Pain BTC dan ETH di Deribit.',
+            'Cari altcoin dengan open interest tinggi yang mulai kehilangan volume spot.'
+        ]
+    else:
+        phase_code = 'M4_MONTH_END_HARVEST'
+        phase_name = 'Fase Akhir Bulan (Deribit Expiry & Institutional Rebalance)'
+        avg_ret = -0.10
+        flow = 'Jumat terakhir Deribit Expiry + Month-End Rebalancing hedge funds. Penutupan buku & de-risking.'
+        stance = 'SHORT_HARVEST'
+        sizing = 1.20
+        rules = [
+            'Golden Window untuk Shorting Altcoin: breakdown di akhir bulan memiliki kelanjutan tertinggi.',
+            'Likuiditas bid institusi sering ditarik menjelang penutupan buku bulanan.',
+            'Pantau lonjakan volume di Jumat terakhir bulan (Options Expiry) pasca 15:00 WIB.'
+        ]
+        
+    return MonthlyCycleResult(
+        asof_date=str(asof),
+        day_of_month=day,
+        days_in_month=days_in_month,
+        cycle_phase=phase_code,
+        phase_name=phase_name,
+        is_options_expiry_week=is_expiry_week,
+        is_last_friday=is_last_fri,
+        historical_avg_return=avg_ret,
+        institutional_flow=flow,
+        tactical_stance=stance,
+        sizing_multiplier=sizing,
+        actionable_rules=rules
+    )
 
 if __name__ == '__main__':
     import argparse

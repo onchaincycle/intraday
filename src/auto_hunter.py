@@ -150,6 +150,19 @@ class AutoHuntSniper:
         }
 
         print("\n🔍 PRA-SCAN: STATUS SLOT INTRADAY")
+        try:
+            from src.portfolio_sizer import PortfolioSizer
+            cycle_mod = PortfolioSizer.calculate_cycle_sizing_modifier()
+            w_phase = cycle_mod.get("weekly_phase", "NORMAL")
+            w_mult = cycle_mod.get("weekly_multiplier", 1.0)
+            m_phase = cycle_mod.get("monthly_phase", "NORMAL")
+            m_mult = cycle_mod.get("monthly_multiplier", 1.0)
+            c_mult = cycle_mod.get("composite_multiplier", 1.0)
+            print(f"  • 📅 Siklus Mingguan: {w_phase} ({w_mult}x)")
+            print(f"  • 🗓️ Siklus Bulanan : {m_phase} ({m_mult}x)")
+            print(f"  • ⚖️ Pengali Siklus : {c_mult}x (Pengali Risiko Kalender)")
+        except Exception:
+            pass
         if dust_coins:
             print(f"  • 🧹 Dust / runner bebas-risiko: {', '.join(dust_coins)} (tidak dihitung slot)")
         for key, label in (("dt_short", "⚡ Intraday Short"), ("dt_long", "⚡ Intraday Long ")):
@@ -277,6 +290,15 @@ class AutoHuntSniper:
         base_risk = self.trader.calculate_risk_margin(equity=equity, risk_pct=risk_pct, sl_pct=sl, leverage=lev, multiplier=1.0)
         base_margin = base_risk["recommended_margin"]
 
+        # Market Cycle Modifier (Day of Week & Monthly Expiry)
+        try:
+            from src.portfolio_sizer import PortfolioSizer
+            cycle_mod = PortfolioSizer.calculate_cycle_sizing_modifier()
+            cycle_mult = float(cycle_mod.get("composite_multiplier", 1.0))
+        except Exception:
+            cycle_mult = 1.0
+            cycle_mod = {}
+
         pre_trade_context = {
             "strategy": strat,
             "side": side,
@@ -284,7 +306,12 @@ class AutoHuntSniper:
             "equity": equity,
             "base_margin": base_margin,
             "sl_pct": sl,
-            "funding_1h_pct": cand.get("funding_1h", 0.0)
+            "funding_1h_pct": cand.get("funding_1h", 0.0),
+            "weekly_cycle": cycle_mod.get("weekly_phase"),
+            "weekly_stance": cycle_mod.get("weekly_stance"),
+            "monthly_cycle": cycle_mod.get("monthly_phase"),
+            "monthly_stance": cycle_mod.get("monthly_stance"),
+            "cycle_multiplier": cycle_mult
         }
         cand_summary = {
             "coin": coin,
@@ -313,10 +340,14 @@ class AutoHuntSniper:
             cand["leverage"] = lev
             cand["dynamic_leverage_note"] = f"Leverage {lev}x (Standard)"
 
-        # Compute final conviction margin
-        ai_risk = self.trader.calculate_risk_margin(equity=equity, risk_pct=risk_pct, sl_pct=sl, leverage=lev, multiplier=size_mult)
+        # Compute final conviction margin (blended with Calendar Cycle Multiplier)
+        effective_mult = round(max(0.35, min(1.40, size_mult * cycle_mult)), 2)
+        ai_risk = self.trader.calculate_risk_margin(equity=equity, risk_pct=risk_pct, sl_pct=sl, leverage=lev, multiplier=effective_mult)
 
         audit_res["base_margin"] = base_margin
+        audit_res["cycle_multiplier"] = cycle_mult
+        audit_res["weekly_phase"] = cycle_mod.get("weekly_phase")
+        audit_res["monthly_phase"] = cycle_mod.get("monthly_phase")
         audit_res["final_margin"] = ai_risk["recommended_margin"]
         audit_res["max_risk_usd"] = ai_risk["max_risk_usd"]
         audit_res["effective_risk_pct"] = ai_risk["effective_risk_pct"]
@@ -394,5 +425,31 @@ class AutoHuntSniper:
             alpha += 3.0  # Longs pay shorts (favorable yield)
         elif cand["side"] == "LONG" and f_rate < -0.005:
             alpha += 3.0  # Shorts pay longs & potential squeeze pump
+
+        # Market Cycle Factor (Day of Week & Monthly Seasonality)
+        try:
+            from src.portfolio_sizer import PortfolioSizer
+            cycle_mod = PortfolioSizer.calculate_cycle_sizing_modifier()
+            w_res = cycle_mod.get("weekly_cycle")
+            m_res = cycle_mod.get("monthly_cycle")
+            cand_side = cand.get("side", "SHORT")
+
+            if w_res:
+                # Tuesday Golden Day boost for SHORT
+                if getattr(w_res, "day_of_week", -1) == 1 and cand_side == "SHORT":
+                    alpha += 3.5
+                # Weekend Liquidity Vacuum penalty
+                elif getattr(w_res, "day_of_week", -1) in (5, 6):
+                    alpha -= 5.0
+
+            if m_res:
+                # Monthly Turn-of-Month (Day 1-5) squeeze risk penalty for SHORT
+                if getattr(m_res, "day_of_month", 99) <= 5 and cand_side == "SHORT":
+                    alpha -= 4.0
+                # Monthly Harvest (Day 25+) Deribit Expiry boost for SHORT
+                elif getattr(m_res, "day_of_month", 0) >= 25 and cand_side == "SHORT":
+                    alpha += 3.0
+        except Exception:
+            pass
 
         return round(alpha, 1)

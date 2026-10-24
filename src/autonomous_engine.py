@@ -832,6 +832,18 @@ class AutonomousEngine:
         if grade != "A+":
             risk_pct = min(risk_pct, float(rp.get("risk_per_trade_pct_grade_a", 0.75)))
         risk_pct *= float(thermo.get("sizing_mult", 1.0))
+
+        # Kalender Siklus Modifier (Mingguan Day-of-Week & Bulanan Expiry)
+        cycle_mult = float(selected_audit.get("cycle_multiplier", 1.0)) if selected_audit else 1.0
+        if cycle_mult == 1.0:
+            try:
+                from src.portfolio_sizer import PortfolioSizer
+                cycle_mod = PortfolioSizer.calculate_cycle_sizing_modifier()
+                cycle_mult = float(cycle_mod.get("composite_multiplier", 1.0))
+            except Exception:
+                cycle_mult = 1.0
+        risk_pct = round(risk_pct * cycle_mult, 3)
+
         risk_notional = equity * (risk_pct / 100.0) / max(sl_pct / 100.0, 1e-6)
         risk_margin = risk_notional / max(lev, 1)
 

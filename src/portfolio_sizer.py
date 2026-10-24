@@ -407,3 +407,41 @@ class PortfolioSizer:
             return False, f"PORTFOLIO HEAT VETO: Total risk (${projected_heat_usd:.2f}) melebihi batas {max_heat_pct}% (${max_allowed_heat_usd:.2f})"
 
         return True, f"Heat check PASSED: Projected heat ${projected_heat_usd:.2f} / ${max_allowed_heat_usd:.2f}"
+
+    @classmethod
+    def calculate_cycle_sizing_modifier(cls, asof: Optional[Any] = None) -> Dict[str, Any]:
+        """
+        Menghitung pengali sizing dinamis kalender berbasis:
+        1. Siklus Mingguan (Day of Week Effect: Selasa Golden Day 1.2x, Weekend 0.5x)
+        2. Siklus Bulanan (Turn of Month Squeeze Risk 0.75x, Deribit Expiry Harvest 1.2x)
+        """
+        try:
+            from src.cycle_engine import evaluate_weekly_cycle, evaluate_monthly_cycle
+            w_res = evaluate_weekly_cycle(asof=asof)
+            m_res = evaluate_monthly_cycle(asof=asof)
+            raw_mult = w_res.sizing_multiplier * m_res.sizing_multiplier
+            clamped_mult = round(max(0.40, min(1.35, raw_mult)), 2)
+            return {
+                "composite_multiplier": clamped_mult,
+                "weekly_cycle": w_res,
+                "monthly_cycle": m_res,
+                "weekly_phase": w_res.phase_name,
+                "weekly_multiplier": w_res.sizing_multiplier,
+                "weekly_stance": w_res.tactical_stance,
+                "monthly_phase": m_res.phase_name,
+                "monthly_multiplier": m_res.sizing_multiplier,
+                "monthly_stance": m_res.tactical_stance,
+                "is_options_expiry_week": m_res.is_options_expiry_week,
+                "is_last_friday": m_res.is_last_friday,
+                "rules": w_res.actionable_rules + m_res.actionable_rules
+            }
+        except Exception as e:
+            return {
+                "composite_multiplier": 1.0,
+                "error": str(e),
+                "weekly_phase": "STANDARD",
+                "monthly_phase": "STANDARD",
+                "weekly_multiplier": 1.0,
+                "monthly_multiplier": 1.0,
+                "rules": []
+            }
