@@ -53,7 +53,7 @@ PROFILES = {
         "max_concurrent_long": 2,   # alokasi slot intraday long
         "max_daily_losses": 3,      # circuit breaker: stop entry intraday setelah 3 loss/hari
         # --- Eksekusi & monitoring ---
-        "session_gate": True,       # hanya London/NY (14:00-23:59 WIB)
+        "session_gate": False,      # Dinonaktifkan atas instruksi user (buka 24 jam / sesi Asia aktif untuk trade riil)
         "poll_seconds": 10,
         "fee_roundtrip_pct": 0.09,
         "target_desc": "Half-Risk @ 0.45R ➔ Early BE @ 0.65R ➔ Continuous Trailing (50% HWM) ➔ TP1 1.0R (Trim 50%) ➔ TP2 2.0R | Auto-Close: 6 Jam"
